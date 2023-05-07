@@ -107,6 +107,11 @@ export abstract class Table extends Resource {
   }
 }
 
+// /**
+//  * Add a row to the table when the app is deployed.
+//  */
+// public abstract addRow(key: string, row: Json): void;
+
 /**
  * Inflight interface for `Table`.
  */
