@@ -14,8 +14,11 @@ let file3 = Json { id: "☁", name: "uʍop ǝpısdn" };
 new cloud.Function(inflight(msg:str): str => {
   table.insert(file1);
   table.insert(file3);
-  assert(Json.stringify(table.list()) == "[{\"id\":\"1\",\"name\":\"Three 3\"},{\"id\":\"☁\",\"name\":\"uʍop ǝpısdn\"}]");
-  table.delete("☁");
-  table.delete("1");
-  assert(Json.stringify(table.list()) == "[]");
-}) as "test:list";
+  log(table.list());
+  // table.insert(file2);
+  log(table.list());
+  // let lista: Map<Json> = table.list();
+  // table.update(Json "[]");
+  table.update(Json { "id": "1"});
+  // log(table.list());
+}) as "test:update";

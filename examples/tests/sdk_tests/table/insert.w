@@ -12,10 +12,13 @@ let file2 = Json { id: "1", name: "Three Ⅲ" };
 let file3 = Json { id: "☁", name: "uʍop ǝpısdn" };
 
 new cloud.Function(inflight(msg:str): str => {
-  table.insert(file1);
-  table.insert(file3);
-  assert(Json.stringify(table.list()) == "[{\"id\":\"1\",\"name\":\"Three 3\"},{\"id\":\"☁\",\"name\":\"uʍop ǝpısdn\"}]");
-  table.delete("☁");
-  table.delete("1");
-  assert(Json.stringify(table.list()) == "[]");
-}) as "test:list";
+  table.insert("1", Json { "pippo": "value1" });
+
+  // assert(!table.get("1"));
+  // table.insert(file1);
+  // assert(table.get("1").name == "Three 3");
+  // table.insert(file2);
+  // assert(table.get("1").name == "Three Ⅲ");
+  // table.insert(file3);
+  // assert(table.get("☁").name == "uʍop ǝpısdn");
+}) as "test:insert";
