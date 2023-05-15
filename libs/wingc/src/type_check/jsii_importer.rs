@@ -4,10 +4,10 @@ use crate::{
 	diagnostic::{WingLocation, WingSpan},
 	type_check::{
 		self, symbol_env::StatementIdx, Class, FunctionSignature, Interface, Struct, SymbolKind, Type, TypeRef, Types,
-		CLASS_INIT_NAME,
+		CLASS_INIT_NAME, FunctionParameter,
 	},
-	CONSTRUCT_BASE_CLASS, WINGSDK_ASSEMBLY_NAME, WINGSDK_DURATION, WINGSDK_INFLIGHT, WINGSDK_JSON, WINGSDK_MUT_JSON,
-	WINGSDK_RESOURCE,
+	CONSTRUCT_BASE_CLASS, WINGSDK_ASSEMBLY_NAME, WINGSDK_DURATION, WINGSDK_JSON, WINGSDK_MUT_JSON,
+	WINGSDK_RESOURCE, docs::Docs,
 };
 use colored::Colorize;
 use wingii::{
@@ -94,15 +94,7 @@ impl<'a> JsiiImporter<'a> {
 			},
 			TypeReference::NamedTypeReference(named_ref) => {
 				let type_fqn = &named_ref.fqn;
-				if type_fqn == &format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_INFLIGHT) {
-					self.wing_types.add_type(Type::Function(FunctionSignature {
-						this_type: Some(self.wing_types.anything()),
-						parameters: vec![self.wing_types.anything()],
-						return_type: self.wing_types.anything(),
-						phase: Phase::Inflight,
-						js_override: None,
-					}))
-				} else if type_fqn == &format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_DURATION) {
+				if type_fqn == &format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_DURATION) {
 					self.wing_types.duration()
 				} else if type_fqn == &format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_JSON) {
 					self.wing_types.json()
@@ -282,6 +274,7 @@ impl<'a> JsiiImporter<'a> {
 				.iter()
 				.map(|m| Self::jsii_name_to_symbol(&m.name, &jsii_enum.location_in_module))
 				.collect(),
+			docs: Docs::from(&jsii_enum.docs),
 		}));
 
 		self.register_jsii_type(&enum_fqn, &enum_symbol, enum_type_ref);
@@ -328,8 +321,8 @@ impl<'a> JsiiImporter<'a> {
 			self.jsii_spec.import_statement_idx,
 		);
 		let new_type_symbol = Self::jsii_name_to_symbol(&type_name, &jsii_interface.location_in_module);
-		let mut wing_type = match is_struct {
-			true => self.wing_types.add_type(Type::Struct(Struct {
+		let mut wing_type = if is_struct {
+			self.wing_types.add_type(Type::Struct(Struct {
 				name: new_type_symbol.clone(),
 				extends: extends.clone(),
 				should_case_convert_jsii: true,
@@ -340,8 +333,9 @@ impl<'a> JsiiImporter<'a> {
 					iface_env.phase,
 					self.jsii_spec.import_statement_idx,
 				), // Dummy env, will be replaced below
-			})),
-			false => self.wing_types.add_type(Type::Interface(Interface {
+			}))
+		} else {
+			self.wing_types.add_type(Type::Interface(Interface {
 				name: new_type_symbol.clone(),
 				extends: extends.clone(),
 				env: SymbolEnv::new(
@@ -351,7 +345,7 @@ impl<'a> JsiiImporter<'a> {
 					iface_env.phase,
 					self.jsii_spec.import_statement_idx,
 				), // Dummy env, will be replaced below
-			})),
+			}))
 		};
 
 		self.register_jsii_type(&jsii_interface_fqn, &new_type_symbol, wing_type);
@@ -433,7 +427,7 @@ impl<'a> JsiiImporter<'a> {
 					self.wing_types.void()
 				};
 
-				let mut param_types = vec![];
+				let mut parameters = vec![];
 				// Define the rest of the arguments and create the method signature
 				if let Some(params) = &m.parameters {
 					if self.has_variadic_parameters(params) {
@@ -447,15 +441,16 @@ impl<'a> JsiiImporter<'a> {
 					}
 
 					for param in params {
-						param_types.push(self.parameter_to_wing_type(&param));
+						parameters.push(self.parameter_to_wing_type(&param));
 					}
 				}
 				let this_type = if is_static { None } else { Some(wing_type) };
 				let method_sig = self.wing_types.add_type(Type::Function(FunctionSignature {
 					this_type,
-					parameters: param_types,
+					parameters,
 					return_type,
 					phase,
+					docs: Docs::from(&m.docs),
 					js_override: m
 						.docs
 						.as_ref()
@@ -465,7 +460,7 @@ impl<'a> JsiiImporter<'a> {
 				class_env
 					.define(
 						&Self::jsii_name_to_symbol(&m.name, &m.location_in_module),
-						SymbolKind::make_variable(method_sig, false, is_static, phase),
+						SymbolKind::make_variable(method_sig, false, is_static, phase, Docs::from(&m.docs)),
 						StatementIdx::Top,
 					)
 					.expect(&format!(
@@ -495,7 +490,7 @@ impl<'a> JsiiImporter<'a> {
 				class_env
 					.define(
 						&Self::jsii_name_to_symbol(&p.name, &p.location_in_module),
-						SymbolKind::make_variable(wing_type, !matches!(p.immutable, Some(true)), is_static, phase),
+						SymbolKind::make_variable(wing_type, !matches!(p.immutable, Some(true)), is_static, phase, Docs::from(&p.docs)),
 						StatementIdx::Top,
 					)
 					.expect(&format!(
@@ -636,6 +631,7 @@ impl<'a> JsiiImporter<'a> {
 			implements,
 			is_abstract: jsii_class.abstract_.unwrap_or(false),
 			type_parameters: type_params,
+			docs: Docs::from(&jsii_class.docs)
 		};
 		let mut new_type = self.wing_types.add_type(if is_resource {
 			Type::Resource(class_spec)
@@ -651,7 +647,7 @@ impl<'a> JsiiImporter<'a> {
 		let jsii_initializer = jsii_class.initializer.as_ref();
 
 		if let Some(initializer) = jsii_initializer {
-			let mut arg_types: Vec<TypeRef> = vec![];
+			let mut args = vec![];
 			if let Some(params) = &initializer.parameters {
 				for (i, param) in params.iter().enumerate() {
 					// If this is a resource then skip scope and id arguments
@@ -666,19 +662,20 @@ impl<'a> JsiiImporter<'a> {
 							continue;
 						}
 					}
-					arg_types.push(self.parameter_to_wing_type(&param));
+					args.push(self.parameter_to_wing_type(&param));
 				}
 			}
 			let method_sig = self.wing_types.add_type(Type::Function(FunctionSignature {
+				docs: Docs::from(&initializer.docs),
 				this_type: None, // Initializers are considered static so they have no `this_type`
-				parameters: arg_types,
+				parameters: args,
 				return_type: new_type,
 				phase,
 				js_override: None,
 			}));
 			if let Err(e) = class_env.define(
 				&Self::jsii_name_to_symbol(CLASS_INIT_NAME, &initializer.location_in_module),
-				SymbolKind::make_variable(method_sig, false, true, phase),
+				SymbolKind::make_variable(method_sig, false, true, phase, Docs::from(&initializer.docs)),
 				StatementIdx::Top,
 			) {
 				panic!("Invalid JSII library, failed to define {}'s init: {}", type_name, e)
@@ -733,16 +730,22 @@ impl<'a> JsiiImporter<'a> {
 		parameters.iter().any(|p| p.variadic.unwrap_or(false))
 	}
 
-	fn parameter_to_wing_type(&mut self, parameter: &jsii::Parameter) -> TypeRef {
+	fn parameter_to_wing_type(&mut self, parameter: &jsii::Parameter) -> FunctionParameter {
 		if parameter.variadic.unwrap_or(false) {
 			panic!("TODO: variadic parameters are unsupported - Give a +1 to this issue: https://github.com/winglang/wing/issues/397");
 		}
 
 		let param_type = self.type_ref_to_wing_type(&parameter.type_);
-		if parameter.optional.unwrap_or(false) {
+		let typ = if parameter.optional.unwrap_or(false) {
 			self.wing_types.add_type(Type::Optional(param_type))
 		} else {
 			param_type
+		};
+
+		FunctionParameter {
+			_type: typ,
+			name: Some(parameter.name.clone()),
+			docs: Docs::from(&parameter.docs),
 		}
 	}
 
@@ -888,4 +891,28 @@ fn test_fqn_is_construct_base() {
 		true
 	);
 	assert_eq!(is_construct_base(&FQN::from("@winglang/sdk.cloud.Bucket")), false);
+}
+
+
+impl From<&Option<jsii::Docs>> for Docs {
+	fn from(value: &Option<jsii::Docs>) -> Self {
+		let Some(docs) = value else {
+			return Docs::default()
+		};
+
+		let docs = docs.clone();
+
+		Docs {
+			custom: docs.custom.unwrap_or_default(),
+			remarks: docs.remarks,
+			summary: docs.summary,
+			default: docs.default,
+			deprecated: docs.deprecated,
+			example: docs.example,
+			see: docs.see,
+			returns: docs.returns,
+			stability: docs.stability,
+			subclassable: docs.subclassable
+		}
+	}
 }

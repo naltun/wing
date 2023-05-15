@@ -10,10 +10,11 @@ extern crate lazy_static;
 use ast::{Scope, Stmt, Symbol, UtilityFunctions};
 use closure_transform::ClosureTransformer;
 use diagnostic::{print_diagnostics, Diagnostic, DiagnosticLevel, Diagnostics};
+use docs::Docs;
 use fold::Fold;
 use jsify::JSifier;
-use type_check::symbol_env::StatementIdx;
-use type_check::{FunctionSignature, SymbolKind, Type};
+use type_check::symbol_env::{StatementIdx, SymbolEnv};
+use type_check::{FunctionSignature, SymbolKind, Type, FunctionParameter};
 use type_check_assert::TypeCheckAssert;
 use visit::Visit;
 use wasm_util::{ptr_to_string, string_to_combined_ptr, WASM_RETURN_ERROR};
@@ -28,7 +29,6 @@ use std::mem;
 use std::path::{Path, PathBuf};
 
 use crate::ast::Phase;
-use crate::type_check::symbol_env::SymbolEnv;
 use crate::type_check::{TypeChecker, Types};
 
 pub mod ast;
@@ -44,6 +44,7 @@ pub mod type_check_assert;
 pub mod type_check_class_fields_init;
 pub mod visit;
 mod wasm_util;
+mod docs;
 
 const WINGSDK_ASSEMBLY_NAME: &'static str = "@winglang/sdk";
 
@@ -64,7 +65,6 @@ const WINGSDK_STRING: &'static str = "std.String";
 const WINGSDK_JSON: &'static str = "std.Json";
 const WINGSDK_MUT_JSON: &'static str = "std.MutJson";
 const WINGSDK_RESOURCE: &'static str = "std.Resource";
-const WINGSDK_INFLIGHT: &'static str = "core.Inflight";
 
 const CONSTRUCT_BASE_CLASS: &'static str = "constructs.Construct";
 
@@ -186,49 +186,57 @@ pub fn type_check(
 		UtilityFunctions::Log.to_string().as_str(),
 		Type::Function(FunctionSignature {
 			this_type: None,
-			parameters: vec![types.string()],
+			parameters: vec![FunctionParameter::new(types.string(), "message", Docs::with_summary("the message to log"))],
 			return_type: types.void(),
 			phase: Phase::Independent,
 			js_override: Some("{console.log($args$)}".to_string()),
+			docs: Docs::with_summary("typeof log")
 		}),
 		scope,
 		types,
+		Docs::with_summary("emits a log message"),
 	);
 	add_builtin(
 		UtilityFunctions::Assert.to_string().as_str(),
 		Type::Function(FunctionSignature {
 			this_type: None,
-			parameters: vec![types.bool()],
+			parameters: vec![FunctionParameter::new(types.bool(), "condition", Docs::with_summary("the condition to assert"))],
 			return_type: types.void(),
 			phase: Phase::Independent,
 			js_override: Some("{((cond) => {if (!cond) throw new Error(`assertion failed: '$args$'`)})($args$)}".to_string()),
+			docs: Docs::with_summary("typeof assert")
 		}),
 		scope,
 		types,
+		Docs::with_summary("asserts that a certain condition is true and throws an error if it is not"),
 	);
 	add_builtin(
 		UtilityFunctions::Throw.to_string().as_str(),
 		Type::Function(FunctionSignature {
 			this_type: None,
-			parameters: vec![types.string()],
+			parameters: vec![FunctionParameter::new(types.string(), "message", Docs::with_summary("the error message"))],
 			return_type: types.void(),
 			phase: Phase::Independent,
 			js_override: Some("{((msg) => {throw new Error(msg)})($args$)}".to_string()),
+			docs: Docs::with_summary("typeof throw")
 		}),
 		scope,
 		types,
+		Docs::with_summary("throws an error with a message"),
 	);
 	add_builtin(
 		UtilityFunctions::Panic.to_string().as_str(),
 		Type::Function(FunctionSignature {
 			this_type: None,
-			parameters: vec![types.string()],
+			parameters: vec![FunctionParameter::new(types.string(), "message", Docs::with_summary("the error message"))],
 			return_type: types.void(),
 			phase: Phase::Independent,
 			js_override: Some("{((msg) => {console.error(msg, (new Error()).stack);process.exit(1)})($args$)}".to_string()),
+			docs: Docs::with_summary("typeof panic")
 		}),
 		scope,
 		types,
+		Docs::with_summary("panic (deprecated)"),
 	);
 
 	let mut tc = TypeChecker::new(types, source_path, jsii_types);
@@ -240,7 +248,7 @@ pub fn type_check(
 }
 
 // TODO: refactor this (why is scope needed?) (move to separate module?)
-fn add_builtin(name: &str, typ: Type, scope: &mut Scope, types: &mut Types) {
+fn add_builtin(name: &str, typ: Type, scope: &Scope, types: &mut Types, docs: Docs) {
 	let sym = Symbol::global(name);
 	scope
 		.env
@@ -249,7 +257,7 @@ fn add_builtin(name: &str, typ: Type, scope: &mut Scope, types: &mut Types) {
 		.unwrap()
 		.define(
 			&sym,
-			SymbolKind::make_variable(types.add_type(typ), false, true, Phase::Independent),
+			SymbolKind::make_variable(types.add_type(typ), false, true, Phase::Independent, docs),
 			StatementIdx::Top,
 		)
 		.expect("Failed to add builtin");

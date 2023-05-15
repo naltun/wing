@@ -2,11 +2,12 @@ pub(crate) mod jsii_importer;
 pub mod symbol_env;
 use crate::ast::{self, ClassField, FunctionBodyRef, TypeAnnotationKind};
 use crate::ast::{
-	ArgList, BinaryOperator, Class as AstClass, Expr, ExprKind, FunctionBody, FunctionParameter,
+	ArgList, BinaryOperator, Class as AstClass, Expr, ExprKind, FunctionBody, FunctionParameter as AstFunctionParameter,
 	Interface as AstInterface, InterpolatedStringPart, Literal, MethodLike, Phase, Reference, Scope, Spanned, Stmt,
 	StmtKind, Symbol, TypeAnnotation, UnaryOperator, UserDefinedType,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticLevel, Diagnostics, TypeError, WingSpan};
+use crate::docs::Docs;
 use crate::type_check_class_fields_init::VisitClassInit;
 use crate::visit::Visit;
 use crate::{
@@ -82,15 +83,18 @@ pub struct VariableInfo {
 	pub phase: Phase,
 	/// Is this a static or instance variable?
 	pub is_static: bool,
+	/// Docs
+	pub docs: Docs,
 }
 
 impl SymbolKind {
-	pub fn make_variable(type_: TypeRef, reassignable: bool, is_static: bool, phase: Phase) -> Self {
+	pub fn make_variable(type_: TypeRef, reassignable: bool, is_static: bool, phase: Phase, docs: Docs) -> Self {
 		SymbolKind::Variable(VariableInfo {
 			type_,
 			reassignable,
 			phase,
 			is_static,
+			docs,
 		})
 	}
 
@@ -194,6 +198,7 @@ pub struct Class {
 	pub fqn: Option<String>,
 	pub is_abstract: bool,
 	pub type_parameters: Option<Vec<TypeRef>>,
+	pub docs: Docs,
 }
 
 #[derive(Derivative)]
@@ -311,6 +316,7 @@ pub struct Struct {
 pub struct Enum {
 	pub name: Symbol,
 	pub values: IndexSet<Symbol>,
+	pub docs: Docs,
 }
 
 #[derive(Debug)]
@@ -415,15 +421,15 @@ impl Subtype for Type {
 					return false;
 				}
 
-				let lparams = l0.parameters.iter();
-				let rparams = r0.parameters.iter();
+				let lparams = l0.parameters.iter().map(|f| f._type);
+				let rparams = r0.parameters.iter().map(|f| f._type);
 
 				for (l, r) in lparams.zip(rparams) {
 					// parameter types are contravariant, which means even if Cat is a subtype of Animal,
 					// (Cat) => void is not a subtype of (Animal) => void
 					// but (Animal) => void is a subtype of (Cat) => void
 					// see https://en.wikipedia.org/wiki/Covariance_and_contravariance_(computer_science)
-					if !r.is_subtype_of(l) {
+					if !r.is_subtype_of(&l) {
 						return false;
 					}
 				}
@@ -577,11 +583,28 @@ impl Subtype for Type {
 }
 
 #[derive(Clone, Debug)]
+pub struct FunctionParameter {
+	pub name: Option<String>,
+	pub _type: TypeRef,
+	pub docs: Docs,
+}
+
+impl FunctionParameter {
+	pub fn new(t: TypeRef, name: &str, docs: Docs) -> Self {
+		FunctionParameter { name: Some(name.to_string()), _type: t, docs }
+	}
+
+	pub fn with_type(t: TypeRef) -> Self {
+		FunctionParameter { name: None, _type: t, docs: Docs::default() }
+	}
+}
+
+#[derive(Clone, Debug)]
 pub struct FunctionSignature {
 	/// The type of "this" inside the function, if any. This should be None for
 	/// static or anonymous functions.
 	pub this_type: Option<TypeRef>,
-	pub parameters: Vec<TypeRef>,
+	pub parameters: Vec<FunctionParameter>,
 	pub return_type: TypeRef,
 	pub phase: Phase,
 
@@ -591,6 +614,7 @@ pub struct FunctionSignature {
 	/// - `$self$`: The expression on which this function was called
 	/// - `$args$`: the arguments passed to this function call
 	pub js_override: Option<String>,
+	pub docs: Docs,
 }
 
 impl FunctionSignature {
@@ -603,7 +627,7 @@ impl FunctionSignature {
 			.iter()
 			.rev()
 			// TODO - as a hack we treat `anything` arguments like optionals so that () => {} can be a subtype of (any) => {}
-			.take_while(|arg| arg.is_option() || arg.is_anything())
+			.take_while(|arg| arg._type.is_option() || arg._type.is_anything())
 			.count();
 
 		self.parameters.len() - num_optionals
@@ -624,7 +648,7 @@ impl PartialEq for FunctionSignature {
 			.parameters
 			.iter()
 			.zip(other.parameters.iter())
-			.all(|(x, y)| x.is_same_type_as(y))
+			.all(|(x, y)| x._type.is_same_type_as(&y._type))
 			&& self.return_type.is_same_type_as(&other.return_type)
 			&& self.phase == other.phase
 	}
@@ -678,7 +702,10 @@ impl Display for FunctionSignature {
 		let params_str = self
 			.parameters
 			.iter()
-			.map(|a| format!("{}", a))
+			.map(|a| match a.name {
+				Some(ref name) => format!("{}: {}", name, a._type),
+				None => format!("{}", a._type),
+			})
 			.collect::<Vec<String>>()
 			.join(", ");
 		let ret_type_str = self.return_type.to_string();
@@ -1144,7 +1171,7 @@ impl<'a> TypeChecker<'a> {
 	fn resolve_static_error(&self, property: &Symbol, message: String) -> VariableInfo {
 		self.diagnostics.borrow_mut().push(Diagnostic {
 			level: DiagnosticLevel::Error,
-			message,
+			message: message.clone(),
 			span: Some(property.span.clone()),
 		});
 		VariableInfo {
@@ -1152,6 +1179,7 @@ impl<'a> TypeChecker<'a> {
 			reassignable: false,
 			phase: Phase::Independent,
 			is_static: true,
+			docs: Docs::with_error(&message),
 		}
 	}
 
@@ -1188,7 +1216,7 @@ impl<'a> TypeChecker<'a> {
 		let TypeError { message, span } = type_error;
 		self.diagnostics.borrow_mut().push(Diagnostic {
 			level: DiagnosticLevel::Error,
-			message,
+			message: message.clone(),
 			span: Some(span),
 		});
 
@@ -1197,6 +1225,7 @@ impl<'a> TypeChecker<'a> {
 			reassignable: false,
 			phase: Phase::Independent,
 			is_static: false,
+			docs: Docs::with_summary(&message),
 		}
 	}
 
@@ -1389,7 +1418,7 @@ impl<'a> TypeChecker<'a> {
 				self.validate_type(constructor_sig.return_type, type_, exp);
 
 				if !arg_list.named_args.is_empty() {
-					let last_arg = constructor_sig.parameters.last().unwrap().maybe_unwrap_option();
+					let last_arg = constructor_sig.parameters.last().unwrap()._type.maybe_unwrap_option();
 					self.validate_structural_type(&arg_list.named_args, &arg_list_types.named_args, &last_arg, exp);
 				}
 
@@ -1413,12 +1442,12 @@ impl<'a> TypeChecker<'a> {
 				}
 
 				// Verify passed positional arguments match the constructor
-				for (arg_expr, arg_type, param_type) in izip!(
+				for (arg_expr, arg_type, param) in izip!(
 					arg_list.pos_args.iter(),
 					arg_list_types.pos_args.iter(),
 					constructor_sig.parameters.iter()
 				) {
-					self.validate_type(*arg_type, *param_type, arg_expr);
+					self.validate_type(*arg_type, param._type, arg_expr);
 				}
 
 				// If this is a Resource then create a new type for this resource object
@@ -1476,7 +1505,7 @@ impl<'a> TypeChecker<'a> {
 				}
 
 				if !arg_list.named_args.is_empty() {
-					let last_arg = func_sig.parameters.last().unwrap().maybe_unwrap_option();
+					let last_arg = func_sig.parameters.last().unwrap()._type.maybe_unwrap_option();
 					self.validate_structural_type(&arg_list.named_args, &arg_list_types.named_args, &last_arg, exp);
 				}
 
@@ -1486,7 +1515,7 @@ impl<'a> TypeChecker<'a> {
 					.parameters
 					.iter()
 					.rev()
-					.take_while(|arg| arg.is_option())
+					.take_while(|arg| arg._type.is_option())
 					.count();
 
 				// Verify arity
@@ -1511,9 +1540,9 @@ impl<'a> TypeChecker<'a> {
 					.take(func_sig.parameters.len() - num_optionals);
 
 				// Verify passed positional arguments match the function's parameter types
-				for (arg_expr, arg_type, param_type) in izip!(arg_list.pos_args.iter(), arg_list_types.pos_args.iter(), params)
+				for (arg_expr, arg_type, param) in izip!(arg_list.pos_args.iter(), arg_list_types.pos_args.iter(), params)
 				{
-					self.validate_type(*arg_type, *param_type, arg_expr);
+					self.validate_type(*arg_type, param._type, arg_expr);
 				}
 
 				func_sig.return_type
@@ -1847,7 +1876,11 @@ impl<'a> TypeChecker<'a> {
 			TypeAnnotationKind::Function(ast_sig) => {
 				let mut args = vec![];
 				for arg in ast_sig.param_types.iter() {
-					args.push(self.resolve_type_annotation(arg, env));
+					args.push(FunctionParameter { 
+						name: None, 
+						_type: self.resolve_type_annotation(arg, env),
+						docs: Docs::default(),
+					});
 				}
 				let sig = FunctionSignature {
 					this_type: None,
@@ -1858,6 +1891,7 @@ impl<'a> TypeChecker<'a> {
 						.map_or(self.types.void(), |t| self.resolve_type_annotation(t, env)),
 					phase: ast_sig.phase,
 					js_override: None,
+					docs: Docs::unsupported("function signature"),
 				};
 				// TODO: avoid creating a new type for each function_sig resolution
 				self.types.add_type(Type::Function(sig))
@@ -1947,7 +1981,7 @@ impl<'a> TypeChecker<'a> {
 					self.validate_type(inferred_type, explicit_type, initial_value);
 					match env.define(
 						var_name,
-						SymbolKind::make_variable(explicit_type, *reassignable, true, env.phase),
+						SymbolKind::make_variable(explicit_type, *reassignable, true, env.phase, Docs::default()),
 						StatementIdx::Index(stmt.idx),
 					) {
 						Err(type_error) => {
@@ -1958,7 +1992,7 @@ impl<'a> TypeChecker<'a> {
 				} else {
 					match env.define(
 						var_name,
-						SymbolKind::make_variable(inferred_type, *reassignable, true, env.phase),
+						SymbolKind::make_variable(inferred_type, *reassignable, true, env.phase, Docs::default()),
 						StatementIdx::Index(stmt.idx),
 					) {
 						Err(type_error) => {
@@ -1996,7 +2030,7 @@ impl<'a> TypeChecker<'a> {
 				let mut scope_env = SymbolEnv::new(Some(env.get_ref()), env.return_type, false, env.phase, stmt.idx);
 				match scope_env.define(
 					&iterator,
-					SymbolKind::make_variable(iterator_type, false, true, env.phase),
+					SymbolKind::make_variable(iterator_type, false, true, env.phase, Docs::default()),
 					StatementIdx::Top,
 				) {
 					Err(type_error) => {
@@ -2235,6 +2269,7 @@ impl<'a> TypeChecker<'a> {
 					implements: impl_interfaces.clone(),
 					is_abstract: false,
 					type_parameters: None, // TODO no way to have generic args in wing yet
+					docs: Docs::default()
 				};
 				let mut class_type = self.types.add_type(if *is_resource {
 					Type::Resource(class_spec)
@@ -2256,7 +2291,7 @@ impl<'a> TypeChecker<'a> {
 					let field_type = self.resolve_type_annotation(&field.member_type, env);
 					match class_env.define(
 						&field.name,
-						SymbolKind::make_variable(field_type, field.reassignable, field.is_static, field.phase),
+						SymbolKind::make_variable(field_type, field.reassignable, field.is_static, field.phase, Docs::default()),
 						StatementIdx::Top,
 					) {
 						Err(type_error) => {
@@ -2421,7 +2456,7 @@ impl<'a> TypeChecker<'a> {
 
 					match interface_env.define(
 						method_name,
-						SymbolKind::make_variable(method_type, false, false, sig.phase),
+						SymbolKind::make_variable(method_type, false, false, sig.phase, Docs::unsupported("interface methods")),
 						StatementIdx::Top,
 					) {
 						Err(type_error) => {
@@ -2458,7 +2493,7 @@ impl<'a> TypeChecker<'a> {
 					}
 					match struct_env.define(
 						&field.name,
-						SymbolKind::make_variable(field_type, false, false, Phase::Independent),
+						SymbolKind::make_variable(field_type, false, false, Phase::Independent, Docs::unsupported("struct fields")),
 						StatementIdx::Top,
 					) {
 						Err(type_error) => {
@@ -2507,6 +2542,7 @@ impl<'a> TypeChecker<'a> {
 				let enum_type_ref = self.types.add_type(Type::Enum(Enum {
 					name: name.clone(),
 					values: values.clone(),
+					docs: Docs::unsupported("enums"),
 				}));
 
 				match env.define(name, SymbolKind::Type(enum_type_ref), StatementIdx::Top) {
@@ -2534,7 +2570,7 @@ impl<'a> TypeChecker<'a> {
 					if let Some(exception_var) = &catch_block.exception_var {
 						match catch_env.define(
 							exception_var,
-							SymbolKind::make_variable(self.types.string(), false, true, env.phase),
+							SymbolKind::make_variable(self.types.string(), false, true, env.phase, Docs::default()),
 							StatementIdx::Top,
 						) {
 							Err(type_error) => {
@@ -2623,7 +2659,7 @@ impl<'a> TypeChecker<'a> {
 						name: "this".into(),
 						span: method_name.span.clone(),
 					},
-					SymbolKind::make_variable(class_type, false, true, class_env.phase),
+					SymbolKind::make_variable(class_type, false, true, class_env.phase, Docs::default()),
 					StatementIdx::Top,
 				)
 				.expect("Expected `this` to be added to constructor env");
@@ -2653,7 +2689,7 @@ impl<'a> TypeChecker<'a> {
 
 		match class_env.define(
 			method_name,
-			SymbolKind::make_variable(method_type, false, instance_type.is_none(), method_sig.phase),
+			SymbolKind::make_variable(method_type, false, instance_type.is_none(), method_sig.phase, Docs::default()),
 			StatementIdx::Top,
 		) {
 			Err(type_error) => {
@@ -2766,12 +2802,12 @@ impl<'a> TypeChecker<'a> {
 	/// * `sig` - The function signature (used to figure out the type of each argument).
 	/// * `env` - The function's environment to prime with the args.
 	///
-	fn add_arguments_to_env(&mut self, args: &Vec<FunctionParameter>, sig: &FunctionSignature, env: &mut SymbolEnv) {
+	fn add_arguments_to_env(&mut self, args: &Vec<AstFunctionParameter>, sig: &FunctionSignature, env: &mut SymbolEnv) {
 		assert!(args.len() == sig.parameters.len());
 		for (arg, arg_type) in args.iter().zip(sig.parameters.iter()) {
 			match env.define(
 				&arg.name,
-				SymbolKind::make_variable(*arg_type, arg.reassignable, true, env.phase),
+				SymbolKind::make_variable(arg_type._type, arg.reassignable, true, env.phase, Docs::default()),
 				StatementIdx::Top,
 			) {
 				Err(type_error) => {
@@ -2835,6 +2871,7 @@ impl<'a> TypeChecker<'a> {
 			should_case_convert_jsii: original_type_class.should_case_convert_jsii,
 			is_abstract: original_type_class.is_abstract,
 			type_parameters: Some(type_params),
+			docs: original_type_class.docs.clone(),
 		});
 
 		// TODO: here we add a new type regardless whether we already "hydrated" `original_type` with these `type_params`. Cache!
@@ -2850,6 +2887,7 @@ impl<'a> TypeChecker<'a> {
 					reassignable,
 					phase: flight,
 					is_static,
+					..
 				}) => {
 					// Replace type params in function signatures
 					if let Some(sig) = v.as_function_sig() {
@@ -2861,11 +2899,17 @@ impl<'a> TypeChecker<'a> {
 							None
 						};
 
-						let new_params: Vec<UnsafeRef<Type>> = sig
+						let new_params = sig
 							.parameters
 							.iter()
-							.map(|arg| self.get_concrete_type_for_generic(*arg, &types_map))
-							.collect();
+							.map(|arg| {
+								let t = self.get_concrete_type_for_generic(arg._type, &types_map);
+								FunctionParameter {
+									_type: t,
+									name: arg.name.clone(),
+									docs: Docs::from(arg.docs.clone()),
+								}
+							}).collect();
 
 						let new_sig = FunctionSignature {
 							this_type: new_this_type,
@@ -2873,6 +2917,7 @@ impl<'a> TypeChecker<'a> {
 							return_type: new_return_type,
 							phase: sig.phase,
 							js_override: sig.js_override.clone(),
+							docs: sig.docs.clone(),
 						};
 
 						match new_type_class.env.define(
@@ -2883,6 +2928,7 @@ impl<'a> TypeChecker<'a> {
 								*reassignable,
 								*is_static,
 								*flight,
+								Docs::default(),
 							),
 							StatementIdx::Top,
 						) {
@@ -2896,7 +2942,7 @@ impl<'a> TypeChecker<'a> {
 						match new_type_class.env.define(
 							// TODO: Original symbol is not available. SymbolKind::Variable should probably expose it
 							&Symbol::global(name),
-							SymbolKind::make_variable(new_var_type, *reassignable, *is_static, *flight),
+							SymbolKind::make_variable(new_var_type, *reassignable, *is_static, *flight, Docs::default()),
 							StatementIdx::Top,
 						) {
 							Err(type_error) => {
@@ -3133,6 +3179,7 @@ impl<'a> TypeChecker<'a> {
 						reassignable: false,
 						phase: env.phase,
 						is_static: false,
+						docs: Docs::default()
 					},
 
 					// Lookup wingsdk std types, hydrating generics if necessary
@@ -3214,6 +3261,7 @@ impl<'a> TypeChecker<'a> {
 						reassignable: false,
 						phase: Phase::Independent,
 						is_static: false,
+						docs: Docs::with_error("Property access unsupported on this type")
 					},
 				};
 
@@ -3238,6 +3286,7 @@ impl<'a> TypeChecker<'a> {
 								reassignable: false,
 								phase: Phase::Independent,
 								is_static: true,
+								docs: Docs::default(),
 							}
 						} else {
 							self.resolve_static_error(
@@ -3374,7 +3423,7 @@ fn add_parent_members_to_struct_env(
 						name: parent_member_name,
 						span: name.span.clone(),
 					},
-					SymbolKind::make_variable(member_type, false, false, struct_env.phase),
+					SymbolKind::make_variable(member_type, false, false, struct_env.phase, Docs::default()),
 					StatementIdx::Top,
 				)?;
 			}
@@ -3428,7 +3477,7 @@ fn add_parent_members_to_iface_env(
 						name: parent_member_name,
 						span: name.span.clone(),
 					},
-					SymbolKind::make_variable(member_type, false, true, iface_env.phase),
+					SymbolKind::make_variable(member_type, false, true, iface_env.phase, Docs::default()),
 					StatementIdx::Top,
 				)?;
 			}
@@ -3524,13 +3573,14 @@ mod tests {
 		assert!(!Phase::Inflight.is_subtype_of(&Phase::Preflight));
 	}
 
-	fn make_function(params: Vec<TypeRef>, ret: TypeRef, phase: Phase) -> Type {
+	fn make_function(params: Vec<FunctionParameter>, ret: TypeRef, phase: Phase, docs: Docs) -> Type {
 		Type::Function(FunctionSignature {
 			this_type: None,
 			parameters: params,
 			return_type: ret,
 			phase,
 			js_override: None,
+			docs,
 		})
 	}
 
@@ -3552,8 +3602,8 @@ mod tests {
 	#[test]
 	fn function_subtyping_across_phases() {
 		let void = UnsafeRef::<Type>(&Type::Void as *const Type);
-		let inflight_fn = make_function(vec![], void, Phase::Inflight);
-		let preflight_fn = make_function(vec![], void, Phase::Preflight);
+		let inflight_fn = make_function(vec![], void, Phase::Inflight, Docs::default());
+		let preflight_fn = make_function(vec![], void, Phase::Preflight, Docs::default());
 
 		// functions of different phases are not subtypes of each other
 		assert!(!inflight_fn.is_subtype_of(&preflight_fn));
@@ -3569,8 +3619,8 @@ mod tests {
 		let void = UnsafeRef::<Type>(&Type::Void as *const Type);
 		let num = UnsafeRef::<Type>(&Type::Number as *const Type);
 		let string = UnsafeRef::<Type>(&Type::String as *const Type);
-		let num_fn = make_function(vec![num], void, Phase::Inflight);
-		let str_fn = make_function(vec![string], void, Phase::Inflight);
+		let num_fn = make_function(vec![FunctionParameter::with_type(num)], void, Phase::Inflight, Docs::default());
+		let str_fn = make_function(vec![FunctionParameter::with_type(string)], void, Phase::Inflight, Docs::default());
 
 		// functions of incompatible arguments are not subtypes of each other
 		assert!(!num_fn.is_subtype_of(&str_fn));
@@ -3582,9 +3632,9 @@ mod tests {
 		let void = UnsafeRef::<Type>(&Type::Void as *const Type);
 		let num = UnsafeRef::<Type>(&Type::Number as *const Type);
 		let string = UnsafeRef::<Type>(&Type::String as *const Type);
-		let returns_num = make_function(vec![], num, Phase::Inflight);
-		let returns_str = make_function(vec![], string, Phase::Inflight);
-		let returns_void = make_function(vec![], void, Phase::Inflight);
+		let returns_num = make_function(vec![], num, Phase::Inflight, Docs::default());
+		let returns_str = make_function(vec![], string, Phase::Inflight, Docs::default());
+		let returns_void = make_function(vec![], void, Phase::Inflight, Docs::default());
 
 		// functions of incompatible return types are not subtypes of each other
 		assert!(!returns_num.is_subtype_of(&returns_str));
@@ -3600,8 +3650,8 @@ mod tests {
 		let void = UnsafeRef::<Type>(&Type::Void as *const Type);
 		let string = UnsafeRef::<Type>(&Type::String as *const Type);
 		let opt_string = UnsafeRef::<Type>(&Type::Optional(string) as *const Type);
-		let str_fn = make_function(vec![string], void, Phase::Inflight);
-		let opt_str_fn = make_function(vec![opt_string], void, Phase::Inflight);
+		let str_fn = make_function(vec![FunctionParameter::with_type(string)], void, Phase::Inflight, Docs::default());
+		let opt_str_fn = make_function(vec![FunctionParameter::with_type(opt_string)], void, Phase::Inflight, Docs::default());
 
 		// let x = (s: string) => {};
 		// let y = (s: string?) => {};

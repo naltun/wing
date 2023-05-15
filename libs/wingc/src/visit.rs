@@ -30,6 +30,9 @@ use crate::ast::{
 /// TODO: Provide a VisitMut trait that allows for mutation of the AST nodes
 /// (each method would accept a `&mut node` instead of `&node`)
 pub trait Visit<'ast> {
+	fn visit_symbol(&mut self, node: &'ast Symbol) {
+		visit_symbol(self, node);
+	}
 	fn visit_scope(&mut self, node: &'ast Scope) {
 		visit_scope(self, node);
 	}
@@ -72,8 +75,12 @@ pub trait Visit<'ast> {
 	fn visit_type_annotation(&mut self, node: &'ast TypeAnnotation) {
 		visit_type_annotation(self, node)
 	}
-	fn visit_symbol(&mut self, _node: &'ast Symbol) {}
 }
+
+// struct VisitContext {
+// 	scope: Scope,
+// 	phase: Phase,
+// }
 
 pub fn visit_scope<'ast, V>(v: &mut V, node: &'ast Scope)
 where
@@ -82,6 +89,13 @@ where
 	for stmt in &node.statements {
 		v.visit_stmt(stmt);
 	}
+}
+
+pub fn visit_symbol<'ast, V>(_v: &mut V, _node: &'ast Symbol)
+where
+	V: Visit<'ast> + ?Sized,
+{
+	return;
 }
 
 pub fn visit_stmt<'ast, V>(v: &mut V, node: &'ast Stmt)

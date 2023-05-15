@@ -317,7 +317,7 @@ impl<'a> Iterator for SymbolEnvIter<'a> {
 mod tests {
 	use crate::{
 		ast::{Phase, Symbol},
-		type_check::{symbol_env::LookupResult, Namespace, SymbolKind, Types},
+		type_check::{symbol_env::LookupResult, Namespace, SymbolKind, Types}, docs::Docs,
 	};
 
 	use super::{StatementIdx, SymbolEnv};
@@ -343,7 +343,7 @@ mod tests {
 		assert!(matches!(
 			parent_env.define(
 				&Symbol::global("parent_global_var"),
-				SymbolKind::make_variable(types.number(), false, true, Phase::Independent),
+				SymbolKind::make_variable(types.number(), false, true, Phase::Independent, Docs::default()),
 				StatementIdx::Top,
 			),
 			Ok(())
@@ -353,7 +353,7 @@ mod tests {
 		assert!(matches!(
 			parent_env.define(
 				&Symbol::global("parent_low_pos_var"),
-				SymbolKind::make_variable(types.number(), false, true, Phase::Independent),
+				SymbolKind::make_variable(types.number(), false, true, Phase::Independent, Docs::default()),
 				StatementIdx::Index(child_scope_idx - 1),
 			),
 			Ok(())
@@ -364,7 +364,7 @@ mod tests {
 		assert!(matches!(
 			parent_env.define(
 				&Symbol::global("parent_high_pos_var"),
-				SymbolKind::make_variable(types.number(), false, true, Phase::Independent),
+				SymbolKind::make_variable(types.number(), false, true, Phase::Independent, Docs::default()),
 				StatementIdx::Index(parent_high_pos_var_idx),
 			),
 			Ok(())
@@ -374,7 +374,7 @@ mod tests {
 		assert!(matches!(
 			child_env.define(
 				&Symbol::global("child_global_var"),
-				SymbolKind::make_variable(types.number(), false, true, Phase::Independent),
+				SymbolKind::make_variable(types.number(), false, true, Phase::Independent, Docs::default()),
 				StatementIdx::Top,
 			),
 			Ok(())
@@ -476,7 +476,7 @@ mod tests {
 		assert!(matches!(
 			ns2.env.get_ref().define(
 				&Symbol::global("ns2_var"),
-				SymbolKind::make_variable(types.number(), false, true, Phase::Independent),
+				SymbolKind::make_variable(types.number(), false, true, Phase::Independent, Docs::default()),
 				StatementIdx::Top,
 			),
 			Ok(())
@@ -486,7 +486,7 @@ mod tests {
 		assert!(matches!(
 			ns1.env.get_ref().define(
 				&Symbol::global("ns1_var"),
-				SymbolKind::make_variable(types.number(), false, true, Phase::Independent),
+				SymbolKind::make_variable(types.number(), false, true, Phase::Independent, Docs::default()),
 				StatementIdx::Top,
 			),
 			Ok(())

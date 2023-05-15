@@ -1,13 +1,14 @@
-use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
+use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 
 use crate::ast::{
-	Class, Expr, FunctionBody, FunctionDefinition, Initializer, Phase, Reference, Scope, Stmt, StmtKind, Symbol,
+	Class, Expr, FunctionBody, FunctionDefinition, Initializer, Reference, Scope, Stmt, StmtKind, Symbol, TypeAnnotation, TypeAnnotationKind,
 };
 use crate::diagnostic::WingSpan;
+use crate::docs::Documented;
 use crate::lsp::sync::FILES;
 use crate::type_check::symbol_env::{LookupResult, SymbolLookupInfo};
-use crate::type_check::SymbolKind;
-use crate::visit::Visit;
+use crate::type_check::{SymbolKind};
+use crate::visit::{Visit, self};
 use crate::wasm_util::WASM_RETURN_ERROR;
 use crate::{
 	ast::ExprKind,
@@ -19,6 +20,7 @@ pub struct HoverVisitor<'a> {
 	pub current_scope: Option<&'a Scope>,
 	pub current_expr: Option<&'a Expr>,
 	pub found_symbol: Option<&'a Symbol>,
+	pub found_type_annotation: Option<&'a TypeAnnotation>,
 }
 
 impl<'a> HoverVisitor<'a> {
@@ -28,6 +30,7 @@ impl<'a> HoverVisitor<'a> {
 			current_scope: None,
 			current_expr: None,
 			found_symbol: None,
+			found_type_annotation: None,
 		}
 	}
 
@@ -36,6 +39,10 @@ impl<'a> HoverVisitor<'a> {
 	}
 
 	fn should_check_span(&self, span: &'a WingSpan) -> bool {
+		if span.eq(&WingSpan::default()) {
+			return true;
+		}
+
 		span.contains(&self.position)
 	}
 
@@ -60,6 +67,14 @@ impl<'a> Visit<'a> for HoverVisitor<'a> {
 				v.visit_stmt(stmt);
 			}
 		});
+	}
+
+	fn visit_type_annotation(&mut self, node: &'a TypeAnnotation) {
+		if node.span.contains(&self.position) {
+			self.found_type_annotation = Some(node);
+		}
+
+		visit::visit_type_annotation(self, node);
 	}
 
 	fn visit_stmt(&mut self, node: &'a Stmt) {
@@ -179,7 +194,7 @@ impl<'a> Visit<'a> for HoverVisitor<'a> {
 	}
 
 	fn visit_symbol(&mut self, node: &'a Symbol) {
-		if self.is_found() || !self.should_check_span(&node.span) {
+		if self.is_found() || !node.span.contains(&self.position) {
 			return;
 		}
 
@@ -220,6 +235,34 @@ pub fn on_hover(params: lsp_types::HoverParams) -> Option<Hover> {
 		let mut hover_visitor = HoverVisitor::new(params.text_document_position_params.position);
 		hover_visitor.visit_scope(root_scope);
 
+		if let Some(type_annotation) = hover_visitor.found_type_annotation {
+			let env = hover_visitor
+				.current_scope
+				.expect("All type annotations must be in a scope")
+				.env
+				.borrow();
+			let env = env.as_ref().expect("All scopes should have a symbol environment");
+
+			let type_str = to_type_string(type_annotation);
+
+			let type_lookup = env.lookup_nested_str(&type_str, None);
+			let dummy = Symbol { name: type_str.to_string(), span: type_annotation.span.clone() };
+			let hover_string = if let LookupResult::Found(kind, info) = type_lookup {
+				format_symbol_with_lookup(&dummy, (kind, info))
+			} else {
+				format_unknown_symbol(&dummy.name)
+			};
+
+			return Some(Hover {
+				contents: HoverContents::Markup(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: hover_string,
+				}),
+				range: Some((&type_annotation.span).into()),
+			});
+		}
+
+
 		if let Some(symbol) = hover_visitor.found_symbol {
 			// If the given symbol is in a nested identifier, we can skip looking it up in the symbol environment
 			if let Some(expr) = hover_visitor.current_expr {
@@ -236,9 +279,8 @@ pub fn on_hover(params: lsp_types::HoverParams) -> Option<Hover> {
 			let env = env.as_ref().expect("All scopes should have a symbol environment");
 
 			let symbol_lookup = env.lookup_ext(symbol, None);
-
 			let hover_string = if let LookupResult::Found(kind, info) = symbol_lookup {
-				format_symbol_with_lookup(&symbol.name, (kind, info))
+				format_symbol_with_lookup(&symbol, (kind, info))
 			} else {
 				format_unknown_symbol(&symbol.name)
 			};
@@ -250,49 +292,66 @@ pub fn on_hover(params: lsp_types::HoverParams) -> Option<Hover> {
 				}),
 				range: Some((&symbol.span).into()),
 			});
+		} else {
+			return Some(Hover {
+				contents: HoverContents::Markup(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: "Unable to find symbol".to_string(),
+				}),
+				range: Some(Range { 
+					start: params.text_document_position_params.position, 
+					end: params.text_document_position_params.position,
+				 })
+			});
 		}
-
-		None
 	})
 }
 
+fn to_type_string(type_annotation: &TypeAnnotation) -> String {
+	match &type_annotation.kind {
+		TypeAnnotationKind::Number => "std.Number".to_string(),
+		TypeAnnotationKind::String => "std.String".to_string(),
+		TypeAnnotationKind::Bool => "std.Bool".to_string(),
+		TypeAnnotationKind::Duration => "std.Duration".to_string(),
+		TypeAnnotationKind::Json => "std.Json".to_string(),
+		TypeAnnotationKind::MutJson => "std.MutJson".to_string(),
+		TypeAnnotationKind::Optional(x) => to_type_string(x),
+		TypeAnnotationKind::Array(_) => "std.Array".to_string(),
+		TypeAnnotationKind::MutArray(_) => "std.MutArray".to_string(),
+		TypeAnnotationKind::Map(_) => "std.Map".to_string(),
+		TypeAnnotationKind::MutMap(_) => "std.MutMap".to_string(),
+		TypeAnnotationKind::Set(_) => "std.Set".to_string(),
+		TypeAnnotationKind::MutSet(_) => "std.MutSet".to_string(),
+		TypeAnnotationKind::Function(_) => "std.Function".to_string(),
+		TypeAnnotationKind::UserDefined(x) => x.to_string(),
+	}
+}
+
 /// Formats a hover string for a symbol that has been found in the symbol environment
-fn format_symbol_with_lookup(symbol_name: &str, symbol_lookup: (&SymbolKind, SymbolLookupInfo)) -> String {
+fn format_symbol_with_lookup(symbol: &Symbol, symbol_lookup: (&SymbolKind, SymbolLookupInfo)) -> String {
 	let symbol_kind = symbol_lookup.0;
-	let lookup_info = symbol_lookup.1;
 
 	match symbol_kind {
-		SymbolKind::Type(t) => {
-			format!("**{}**", t)
-		}
-		SymbolKind::Variable(variable_info) => {
-			let flight = match lookup_info.phase {
-				Phase::Inflight => "inflight ",
-				Phase::Preflight => "preflight ",
-				Phase::Independent => "",
-			};
-			let reassignable = if variable_info.reassignable { "var " } else { "" };
-			let _type = &variable_info.type_;
-
-			format!("```wing\n{flight}{reassignable}{symbol_name}: {_type}\n```")
-		}
+		SymbolKind::Type(_type) => render_docs(symbol, *_type),
+		SymbolKind::Variable(vi) => render_docs(symbol, vi.type_),
 		SymbolKind::Namespace(namespace) => {
 			let namespace_name = &namespace.name;
-
 			format!("```wing\nbring {namespace_name}\n```")
 		}
 	}
 }
 
+fn render_docs(_symbol: &Symbol, t: impl Documented) -> String {
+	t.render_docs(&_symbol)
+}
+
 /// Formats a hover string for a symbol that we don't yet know how to handle yet
 fn format_unknown_symbol(symbol_name: &str) -> String {
-	format!("```wing\n{symbol_name}\n```")
+	format!("```wing\n(unknown!) {symbol_name}\n```")
 }
 
 /// Builds the entire Hover response for a nested identifier, which are handled differently than other "loose" symbols
 fn build_nested_identifier_hover(property: &Symbol, expr: &Expr) -> Option<Hover> {
-	let symbol_name = &property.name;
-
 	let expression_type = expr
 		.evaluated_type
 		.borrow()
@@ -301,7 +360,7 @@ fn build_nested_identifier_hover(property: &Symbol, expr: &Expr) -> Option<Hover
 	return Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: format!("```wing\n{symbol_name}: {expression_type}\n```"),
+			value: render_docs(property, expression_type),
 		}),
 		// When hovering over a reference, we want to highlight the entire relevant expression
 		// e.g. Hovering over `b` in `a.b.c` will highlight `a.b`

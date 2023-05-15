@@ -7,7 +7,7 @@ use crate::{
 		ArgList, Class, ClassField, Expr, ExprKind, FunctionDefinition, FunctionParameter, FunctionSignature, Initializer,
 		Phase, Reference, Scope, Stmt, StmtKind, Symbol, TypeAnnotation, TypeAnnotationKind, UserDefinedType,
 	},
-	fold::{self, Fold},
+	fold::{self, Fold}, diagnostic::WingSpan,
 };
 
 const PARENT_THIS_NAME: &str = "__parent_this";
@@ -73,20 +73,20 @@ impl Fold for ClosureTransformer {
 		// If we are inside a scope with "this", add define `let __parent_this = this` which can be
 		// used by the newly-created preflight classes
 		if self.inside_scope_with_this {
-			let parent_this_name = Symbol::new(PARENT_THIS_NAME, node.span.clone());
-			let this_name = Symbol::new("this", node.span.clone());
+			let parent_this_name = Symbol::new(PARENT_THIS_NAME, WingSpan::default());
+			let this_name = Symbol::new("this", WingSpan::default());
 			let parent_this_def = Stmt {
 				kind: StmtKind::VariableDef {
 					reassignable: false,
 					var_name: parent_this_name,
 					initial_value: Expr {
 						kind: ExprKind::Reference(Reference::Identifier(this_name)),
-						span: node.span.clone(),
+						span: WingSpan::default(),
 						evaluated_type: RefCell::new(None), // thank god we have type reference
 					},
 					type_: None,
 				},
-				span: node.span.clone(),
+				span: WingSpan::default(),
 				idx: 0,
 			};
 
@@ -162,20 +162,20 @@ impl Fold for ClosureTransformer {
 
 				let new_class_name = Symbol {
 					name: format!("$Inflight{}", self.inflight_counter),
-					span: expr.span.clone(),
+					span: WingSpan::default(),
 				};
 				let handle_name = Symbol {
 					name: "handle".to_string(),
-					span: expr.span.clone(),
+					span: WingSpan::default(),
 				};
 
 				let class_type_annotation = TypeAnnotation {
 					kind: TypeAnnotationKind::UserDefined(UserDefinedType {
 						root: new_class_name.clone(),
 						fields: vec![],
-						span: expr.span.clone(),
+						span: WingSpan::default(),
 					}),
-					span: expr.span.clone(),
+					span: WingSpan::default(),
 				};
 
 				let class_fields: Vec<ClassField> = vec![];
@@ -214,8 +214,8 @@ impl Fold for ClosureTransformer {
 								return_type: Some(Box::new(class_type_annotation.clone())),
 								phase: Phase::Preflight,
 							},
-							statements: Scope::new(vec![], expr.span.clone()),
-							span: expr.span.clone(),
+							statements: Scope::new(vec![], WingSpan::default()),
+							span: WingSpan::default(),
 						},
 						fields: class_fields,
 						implements: vec![],
@@ -224,7 +224,7 @@ impl Fold for ClosureTransformer {
 						inflight_initializer: None,
 					}),
 					idx: self.nearest_stmt_idx,
-					span: expr.span.clone(),
+					span: WingSpan::default(),
 				};
 
 				// new_class_instance :=
@@ -241,7 +241,7 @@ impl Fold for ClosureTransformer {
 						obj_id: None,
 						obj_scope: None,
 					},
-					expr.span.clone(),
+					WingSpan::default(),
 				);
 
 				self.class_statements.push(class_def);
