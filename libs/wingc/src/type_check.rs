@@ -191,8 +191,8 @@ impl Debug for NamespaceRef {
 #[derivative(Debug)]
 pub struct Class {
 	pub name: Symbol,
-	parent: Option<TypeRef>,  // Must be a Type::Class type
-	implements: Vec<TypeRef>, // Must be a Type::Interface type
+	pub parent: Option<TypeRef>,  // Must be a Type::Class type
+	pub implements: Vec<TypeRef>, // Must be a Type::Interface type
 	#[derivative(Debug = "ignore")]
 	pub env: SymbolEnv,
 	pub fqn: Option<String>,
@@ -276,6 +276,16 @@ pub trait ClassLike {
 			.expect("class env should only contain variables");
 		v.type_.as_function_sig().map(|_| v.clone())
 	}
+
+	/// Returns the initializer method of the class (if defined).
+	fn get_init(&self) -> Option<FunctionSignature> {
+		let Some(m) = self.get_method(&CLASS_INIT_NAME.into()) else {
+			return None;
+		};
+
+		m.type_.as_function_sig().map(|f| f.clone())
+	}
+
 }
 
 impl ClassLike for Interface {

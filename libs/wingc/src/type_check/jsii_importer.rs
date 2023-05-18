@@ -523,7 +523,7 @@ impl<'a> JsiiImporter<'a> {
 	}
 
 	fn import_class(&mut self, jsii_class: &'a wingii::jsii::ClassType) {
-		let mut is_resource = is_construct_base(&FQN::from(jsii_class.fqn.as_str()));
+		let mut is_resource = is_construct_base(&jsii_class.fqn);
 
 		let jsii_class_fqn = FQN::from(jsii_class.fqn.as_str());
 		debug!("Importing class {}", jsii_class_fqn.as_str().green());
@@ -870,25 +870,23 @@ fn extract_docstring_tag<'a>(docs: &'a Option<jsii::Docs>, arg: &str) -> Option<
 /// Returns true if the FQN represents a "construct base class".
 ///
 /// TODO: this is a temporary hack until we support interfaces.
-pub fn is_construct_base(fqn: &FQN) -> bool {
+pub fn is_construct_base(fqn: &str) -> bool {
 	// We treat both CONSTRUCT_BASE_CLASS and WINGSDK_RESOURCE, as base constructs because in wingsdk we currently have stuff directly derived
 	// from `construct.Construct` and stuff derived `std.Resource` (which itself is derived from `constructs.Construct`).
 	// But since we don't support interfaces yet we can't import `std.Resource` so we just treat it as a base class.
 	// I'm also not sure we should ever import `std.Resource` because we might want to keep its internals hidden to the user:
 	// after all it's an abstract class representing our `resource` primitive. See https://github.com/winglang/wing/issues/261.
-	fqn.as_str() == &format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_RESOURCE) || fqn.as_str() == CONSTRUCT_BASE_CLASS
+	fqn == &format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_RESOURCE) || fqn == CONSTRUCT_BASE_CLASS
 }
 
 #[test]
 fn test_fqn_is_construct_base() {
-	assert_eq!(is_construct_base(&FQN::from(CONSTRUCT_BASE_CLASS)), true);
+	assert_eq!(is_construct_base(CONSTRUCT_BASE_CLASS), true);
 	assert_eq!(
-		is_construct_base(&FQN::from(
-			format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_RESOURCE).as_str()
-		)),
+		is_construct_base(&format!("{}.{}", WINGSDK_ASSEMBLY_NAME, WINGSDK_RESOURCE)),
 		true
 	);
-	assert_eq!(is_construct_base(&FQN::from("@winglang/sdk.cloud.Bucket")), false);
+	assert_eq!(is_construct_base("@winglang/sdk.cloud.Bucket"), false);
 }
 
 

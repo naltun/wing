@@ -332,8 +332,8 @@ fn format_symbol_with_lookup(symbol: &Symbol, symbol_lookup: (&SymbolKind, Symbo
 	let symbol_kind = symbol_lookup.0;
 
 	match symbol_kind {
-		SymbolKind::Type(_type) => render_docs(symbol, *_type),
-		SymbolKind::Variable(vi) => render_docs(symbol, vi.type_),
+		SymbolKind::Type(_type) => _type.render_docs(symbol),
+		SymbolKind::Variable(vi) => vi.render_docs(symbol),
 		SymbolKind::Namespace(namespace) => {
 			let namespace_name = &namespace.name;
 			format!("```wing\nbring {namespace_name}\n```")
@@ -341,9 +341,9 @@ fn format_symbol_with_lookup(symbol: &Symbol, symbol_lookup: (&SymbolKind, Symbo
 	}
 }
 
-fn render_docs(_symbol: &Symbol, t: impl Documented) -> String {
-	t.render_docs(&_symbol)
-}
+// fn render_docs(_symbol: &Symbol, t: impl Documented) -> String {
+// 	t.render_docs(&_symbol)
+// }
 
 /// Formats a hover string for a symbol that we don't yet know how to handle yet
 fn format_unknown_symbol(symbol_name: &str) -> String {
@@ -360,7 +360,7 @@ fn build_nested_identifier_hover(property: &Symbol, expr: &Expr) -> Option<Hover
 	return Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: render_docs(property, expression_type),
+			value: expression_type.render_docs(property),
 		}),
 		// When hovering over a reference, we want to highlight the entire relevant expression
 		// e.g. Hovering over `b` in `a.b.c` will highlight `a.b`
