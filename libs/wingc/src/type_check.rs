@@ -1,15 +1,15 @@
+mod class_fields_init;
 pub(crate) mod jsii_importer;
 pub mod symbol_env;
+
 use crate::ast::{self, ClassField, FunctionBodyRef, TypeAnnotationKind};
 use crate::ast::{
 	ArgList, BinaryOperator, Class as AstClass, Expr, ExprKind, FunctionBody, FunctionParameter as AstFunctionParameter,
 	Interface as AstInterface, InterpolatedStringPart, Literal, MethodLike, Phase, Reference, Scope, Spanned, Stmt,
 	StmtKind, Symbol, TypeAnnotation, UnaryOperator, UserDefinedType,
 };
-use crate::diagnostic::{Diagnostic, DiagnosticLevel, Diagnostics, TypeError, WingSpan};
+use crate::diagnostic::{Diagnostic, Diagnostics, TypeError, WingSpan};
 use crate::docs::Docs;
-use crate::type_check_class_fields_init::VisitClassInit;
-use crate::visit::Visit;
 use crate::{
 	debug, WINGSDK_ARRAY, WINGSDK_ASSEMBLY_NAME, WINGSDK_CLOUD_MODULE, WINGSDK_DURATION, WINGSDK_FS_MODULE, WINGSDK_JSON,
 	WINGSDK_MAP, WINGSDK_MUT_ARRAY, WINGSDK_MUT_JSON, WINGSDK_MUT_MAP, WINGSDK_MUT_SET, WINGSDK_REDIS_MODULE,
@@ -28,6 +28,7 @@ use symbol_env::{StatementIdx, SymbolEnv};
 use wingii::fqn::FQN;
 use wingii::type_system::TypeSystem;
 
+use self::class_fields_init::VisitClassInit;
 use self::jsii_importer::JsiiImportSpec;
 use self::symbol_env::{LookupResult, SymbolEnvIter};
 
@@ -194,7 +195,6 @@ pub struct Class {
 	implements: Vec<TypeRef>, // Must be a Type::Interface type
 	#[derivative(Debug = "ignore")]
 	pub env: SymbolEnv,
-	pub should_case_convert_jsii: bool,
 	pub fqn: Option<String>,
 	pub is_abstract: bool,
 	pub type_parameters: Option<Vec<TypeRef>>,
@@ -309,7 +309,6 @@ pub struct Struct {
 	extends: Vec<TypeRef>, // Must be a Type::Struct type
 	#[derivative(Debug = "ignore")]
 	pub env: SymbolEnv,
-	pub should_case_convert_jsii: bool,
 }
 
 #[derive(Debug)]
@@ -1146,31 +1145,14 @@ impl<'a> TypeChecker<'a> {
 		);
 	}
 
-	// TODO: All calls to this should be removed and we should make sure type checks are done
-	// for unimplemented types
-	pub fn unimplemented_type(&self, type_name: &str) -> Option<Type> {
-		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Warning,
-			message: format!("Unimplemented type: {}", type_name),
-			span: None,
-		});
-
-		return Some(Type::Anything);
-	}
-
 	fn general_type_error(&self, message: String) -> TypeRef {
-		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Error,
-			message,
-			span: None,
-		});
+		self.diagnostics.borrow_mut().push(Diagnostic { message, span: None });
 
 		self.types.anything()
 	}
 
 	fn resolve_static_error(&self, property: &Symbol, message: String) -> VariableInfo {
 		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Error,
 			message: message.clone(),
 			span: Some(property.span.clone()),
 		});
@@ -1185,7 +1167,6 @@ impl<'a> TypeChecker<'a> {
 
 	fn expr_error(&self, expr: &Expr, message: String) -> TypeRef {
 		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Error,
 			message,
 			span: Some(expr.span.clone()),
 		});
@@ -1195,7 +1176,6 @@ impl<'a> TypeChecker<'a> {
 
 	fn stmt_error(&self, stmt: &Stmt, message: String) {
 		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Error,
 			message,
 			span: Some(stmt.span.clone()),
 		});
@@ -1204,7 +1184,6 @@ impl<'a> TypeChecker<'a> {
 	fn type_error(&self, type_error: TypeError) -> TypeRef {
 		let TypeError { message, span } = type_error;
 		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Error,
 			message,
 			span: Some(span),
 		});
@@ -1215,7 +1194,6 @@ impl<'a> TypeChecker<'a> {
 	fn variable_error(&self, type_error: TypeError) -> VariableInfo {
 		let TypeError { message, span } = type_error;
 		self.diagnostics.borrow_mut().push(Diagnostic {
-			level: DiagnosticLevel::Error,
 			message: message.clone(),
 			span: Some(span),
 		});
@@ -1291,7 +1269,6 @@ impl<'a> TypeChecker<'a> {
 									ltype, rtype, self.types.number(), self.types.number(), self.types.string(), self.types.string(),
 								),
 								span: Some(exp.span()),
-								level: DiagnosticLevel::Error,
 							});
 							self.types.anything() // TODO: return error type
 						}
@@ -1479,9 +1456,9 @@ impl<'a> TypeChecker<'a> {
 				}
 				type_
 			}
-			ExprKind::Call { function, arg_list } => {
+			ExprKind::Call { callee, arg_list } => {
 				// Resolve the function's reference (either a method in the class's env or a function in the current env)
-				let func_type = self.type_check_exp(function, env);
+				let func_type = self.type_check_exp(callee, env);
 
 				let arg_list_types = self.type_check_arg_list(arg_list, env);
 
@@ -1494,7 +1471,7 @@ impl<'a> TypeChecker<'a> {
 				let func_sig = if let Some(func_sig) = func_type.as_function_sig() {
 					func_sig
 				} else {
-					return self.expr_error(function, "should be a function or method".to_string());
+					return self.expr_error(callee, "should be a function or method".to_string());
 				};
 
 				if !env.phase.can_call_to(&func_sig.phase) {
@@ -1842,7 +1819,6 @@ impl<'a> TypeChecker<'a> {
 					)
 				},
 				span: Some(span.span()),
-				level: DiagnosticLevel::Error,
 			});
 			expected_types[0]
 		} else {
@@ -1963,7 +1939,7 @@ impl<'a> TypeChecker<'a> {
 		self.statement_idx = stmt.idx;
 
 		match &stmt.kind {
-			StmtKind::VariableDef {
+			StmtKind::Let {
 				reassignable,
 				var_name,
 				initial_value,
@@ -2261,7 +2237,6 @@ impl<'a> TypeChecker<'a> {
 
 				// Create the resource/class type and add it to the current environment (so class implementation can reference itself)
 				let class_spec = Class {
-					should_case_convert_jsii: false,
 					name: name.clone(),
 					fqn: None,
 					env: dummy_env,
@@ -2526,7 +2501,6 @@ impl<'a> TypeChecker<'a> {
 					name,
 					SymbolKind::Type(self.types.add_type(Type::Struct(Struct {
 						name: name.clone(),
-						should_case_convert_jsii: false,
 						extends: extends_types,
 						env: struct_env,
 					}))),
@@ -2600,15 +2574,17 @@ impl<'a> TypeChecker<'a> {
 	/// * `statements` - The constructor scope (init)
 	/// * `fields` - All fields of a class
 	///
-	fn check_class_field_initialization(&mut self, statements: &Scope, fields: &[ClassField]) {
-		let mut visit_init = VisitClassInit { fields: Vec::new() };
-		visit_init.visit_scope(statements);
+	fn check_class_field_initialization(&mut self, scope: &Scope, fields: &[ClassField]) {
+		let mut visit_init = VisitClassInit::default();
+		visit_init.analyze_statements(&scope.statements);
+		let initialized_fields = visit_init.fields;
+
 		for field in fields.iter() {
 			// inflight or static fields cannot be initialized in the initializer
 			if field.phase == Phase::Inflight || field.is_static {
 				continue;
 			}
-			if !visit_init.fields.contains(&field.name.name) {
+			if !initialized_fields.contains(&field.name.name) {
 				self.type_error(TypeError {
 					message: format!("\"{}\" is not initialized", field.name.name),
 					span: field.name.span.clone(),
@@ -2868,7 +2844,6 @@ impl<'a> TypeChecker<'a> {
 			fqn: Some(original_fqn.to_string()),
 			parent: original_type_class.parent,
 			implements: original_type_class.implements.clone(),
-			should_case_convert_jsii: original_type_class.should_case_convert_jsii,
 			is_abstract: original_type_class.is_abstract,
 			type_parameters: Some(type_params),
 			docs: original_type_class.docs.clone(),
