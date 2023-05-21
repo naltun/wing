@@ -321,8 +321,19 @@ impl<'a> JsiiImporter<'a> {
 			self.jsii_spec.import_statement_idx,
 		);
 		let new_type_symbol = Self::jsii_name_to_symbol(&type_name, &jsii_interface.location_in_module);
-		let mut wing_type = if is_struct {
-			self.wing_types.add_type(Type::Struct(Struct {
+		let mut wing_type = match is_struct {
+			true => self.wing_types.add_type(Type::Struct(Struct {
+				name: new_type_symbol.clone(),
+				extends: extends.clone(),
+				env: SymbolEnv::new(
+					None,
+					self.wing_types.void(),
+					false,
+					iface_env.phase,
+					self.jsii_spec.import_statement_idx,
+				), // Dummy env, will be replaced below
+			})),
+			false => self.wing_types.add_type(Type::Interface(Interface {
 				name: new_type_symbol.clone(),
 				extends: extends.clone(),
 				env: SymbolEnv::new(
