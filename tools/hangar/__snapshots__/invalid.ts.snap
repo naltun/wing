@@ -876,6 +876,13 @@ error: Expected type to be optional, but got \\"bool\\" instead
    |            ^^^^ Expected type to be optional, but got \\"bool\\" instead
 
 
+error: Expected type to be \\"str\\", but got \\"str?\\" instead
+   --> ../../../examples/tests/invalid/optionals.w:71:16
+   |
+71 | let val: str = baz?.bar?.foo?.val;
+   |                ^^^^^^^^^^^^^^^^^^ Expected type to be \\"str\\", but got \\"str?\\" instead
+
+
 error: Variable hi is not reassignable 
    --> ../../../examples/tests/invalid/optionals.w:46:3
    |
