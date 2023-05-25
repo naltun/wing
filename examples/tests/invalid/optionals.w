@@ -46,3 +46,27 @@ if let hi = hi {
   hi = "bye";
 //^^^^^^^^^^^ Variable hi is not reassignable 
 }
+
+struct Foo {
+  val: str?;
+}
+
+struct Bar {
+  foo: Foo?;
+}
+
+struct Baz {
+  bar: Bar?;
+}
+
+let baz: Baz = Baz {
+  bar: Bar {
+    foo: Foo {
+      val: "hello"
+    }
+  }
+};
+
+// Ensure that ?. returns T? rather than T
+let val: str = baz?.bar?.foo?.val;
+//             ^^^^^^^^^^^^^^^^^^ Expected type to be "str", but got "str?" instead
